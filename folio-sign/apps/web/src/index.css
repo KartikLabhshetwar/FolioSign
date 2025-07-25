@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&display=swap');
+
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -131,4 +133,58 @@ body {
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* Enhanced dragging styles */
+.drag-handle {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  transition: all 0.2s ease;
+}
+
+.drag-handle:hover {
+  cursor: grab;
+  transform: scale(1.02);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+}
+
+.drag-handle:active {
+  cursor: grabbing !important;
+  transform: scale(1.05);
+  box-shadow: 0 6px 16px rgba(59, 130, 246, 0.25);
+}
+
+/* Ensure signature images don't interfere with dragging */
+.drag-handle img {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+/* Improve resize handle visibility and interaction */
+.react-resizable-handle {
+  z-index: 30;
+  transition: all 0.2s ease;
+}
+
+.react-resizable-handle:hover {
+  transform: scale(1.1);
+}
+
+/* Smooth transitions for signature positioning */
+.signature-container {
+  transition: transform 0.1s ease-out;
+}
+
+/* Prevent text selection during drag operations */
+.react-draggable-dragging {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
 }

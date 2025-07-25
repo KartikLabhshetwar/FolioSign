@@ -12,17 +12,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { trpc, trpcClient } from "@/utils/trpc";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, createFileRoute } from "@tanstack/react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   ChevronDown,
   ChevronLeft,
@@ -32,12 +24,27 @@ import {
   FolderPlus,
   MoreHorizontal,
   PlusCircle,
+  FileText,
+  File,
+  Crop,
+  RotateCw,
+  Trash2,
+  Plus,
+  Upload,
 } from "lucide-react";
-import { useRef } from "react";
+import { useRef, useState, useEffect } from "react";
 import { toast } from "sonner";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../../server/src/routers";
 import Loader from "@/components/loader";
+import { Document, Page, pdfjs } from "react-pdf";
+
+// Import PDF.js CSS
+import "react-pdf/dist/Page/AnnotationLayer.css";
+import "react-pdf/dist/Page/TextLayer.css";
+
+// Set up PDF.js worker
+pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 type RouterOutput = inferRouterOutputs<AppRouter>;
 type Document = {
@@ -52,67 +59,178 @@ export const Route = createFileRoute("/dashboard")({
   component: RouteComponent,
 });
 
+// PDF Preview Component
+function PDFPreview({ documentId, fileName }: { documentId: string; fileName: string }) {
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchPdfUrl = async () => {
+      try {
+        setIsLoading(true);
+        const documentData = await trpcClient.document.get.query({ id: documentId });
+        setPdfUrl(documentData.url);
+      } catch (err) {
+        console.error('Error fetching PDF URL:', err);
+        setError('Failed to load preview');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    if (documentId && !pdfUrl) {
+      fetchPdfUrl();
+    }
+  }, [documentId, pdfUrl]);
+
+  if (isLoading) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (error || !pdfUrl) {
+    return (
+      <div className="w-full h-full flex items-center justify-center flex-col space-y-2">
+        {getFileIcon(fileName)}
+        <div className="text-xs text-gray-500">{error || 'No preview'}</div>
+      </div>
+    );
+  }
+
+  // For PDF files, try to show actual preview
+  if (fileName.toLowerCase().endsWith('.pdf')) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <Document
+          file={pdfUrl}
+          onLoadError={(error) => {
+            setError('Failed to load PDF');
+          }}
+          loading={
+            <div className="flex items-center justify-center h-full">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+            </div>
+          }
+        >
+          <Page 
+            pageNumber={1} 
+            width={180}
+            renderTextLayer={false}
+            renderAnnotationLayer={false}
+            loading={
+              <div className="flex items-center justify-center h-full">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+              </div>
+            }
+          />
+        </Document>
+      </div>
+    );
+  }
+
+  // For non-PDF files, show file icon
+  return (
+    <div className="w-full h-full flex items-center justify-center flex-col space-y-2">
+      {getFileIcon(fileName)}
+      <div className="text-xs text-gray-500">{fileName}</div>
+    </div>
+  );
+}
+
+function getFileIcon(fileName: string) {
+  const isPdf = fileName.toLowerCase().endsWith('.pdf');
+  return isPdf ? (
+    <FileText className="h-8 w-8 text-red-500" />
+  ) : (
+    <File className="h-8 w-8 text-blue-500" />
+  );
+}
+
 function RouteComponent() {
+  const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
+  const [isUploading, setIsUploading] = useState(false);
 
   const { data: documents, isLoading } = useQuery({
     queryKey: ["documents"],
     queryFn: () => trpcClient.document.list.query(),
   });
 
-  const createPresignedUrlMutation = useMutation({
-    mutationFn: async (file: File) => {
-      const { presignedUrl, key } =
-        await trpcClient.document.createPresignedUrl.mutate({
-          name: file.name,
-        });
-      return { presignedUrl, key };
-    },
-  });
-
-  const createDocumentMutation = useMutation({
-    mutationFn: async (variables: { name: string; key: string }) => {
-      return trpcClient.document.createDocument.mutate(variables);
-    },
-    onSuccess: () => {
-      toast.success("Document uploaded successfully");
-      queryClient.invalidateQueries({
-        queryKey: ["documents"],
-      });
-    },
-    onError: (error) => {
-      toast.error(error.message);
-    },
-  });
-
   const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    createPresignedUrlMutation.mutate(file, {
-      onSuccess: async ({ presignedUrl, key }) => {
-        const response = await fetch(presignedUrl, {
-          method: "PUT",
-          body: file,
-          headers: {
-            "Content-Type": file.type,
-          },
-        });
+    // Validate file type
+    const allowedTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+    if (!allowedTypes.includes(file.type)) {
+      toast.error("Please upload a PDF or DOCX file");
+      return;
+    }
 
-        if (response.ok) {
-          createDocumentMutation.mutate({
-            name: file.name,
-            key,
-          });
-        } else {
-          toast.error("Failed to upload file");
-        }
-      },
-      onError: (error) => {
-        toast.error(error.message);
-      },
-    });
+    // Validate file size (10MB limit)
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("File size must be less than 10MB");
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      // Get presigned URL
+      const { presignedUrl, key } = await trpcClient.document.createPresignedUrl.mutate({
+        name: file.name
+      });
+
+      // Upload file to S3
+      const uploadResponse = await fetch(presignedUrl, {
+        method: 'PUT',
+        body: file,
+        headers: {
+          'Content-Type': file.type,
+        },
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error('Failed to upload file');
+      }
+
+      // Create document record
+      const documentResult = await trpcClient.document.createDocument.mutate({
+        name: file.name,
+        key: key
+      }) as { _id: string };
+
+      toast.success("Document uploaded successfully!");
+      
+      // Invalidate queries to refresh the list
+      queryClient.invalidateQueries({
+        queryKey: ["documents"],
+      });
+      
+      // Navigate to document signing page
+      navigate({ to: `/document/${documentResult._id}` });
+    } catch (error) {
+      console.error('Upload error:', error);
+      toast.error("Failed to upload document. Please try again.");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleDeleteDocument = async (documentId: string) => {
+    try {
+      await trpcClient.document.deleteDocument.mutate({ id: documentId });
+      toast.success("Document deleted successfully!");
+      queryClient.invalidateQueries({
+        queryKey: ["documents"],
+      });
+    } catch (error) {
+      toast.error("Failed to delete document");
+    }
   };
 
   return (
@@ -125,9 +243,9 @@ function RouteComponent() {
             ref={fileInputRef}
             onChange={handleUpload}
             className="hidden"
-            accept="application/pdf"
+            accept=".pdf,.docx"
           />
-          <Button onClick={() => fileInputRef.current?.click()}>
+          <Button onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
             <PlusCircle className="mr-2 h-4 w-4" /> Upload Document
           </Button>
           <Button variant="outline">
@@ -175,129 +293,145 @@ function RouteComponent() {
           </CardContent>
         </Card>
       </div>
+      {/* Document Previews */}
       <div>
         <Card>
           <CardHeader>
-            <CardTitle>Documents</CardTitle>
-            <CardDescription>Manage your documents.</CardDescription>
+            <CardTitle>Document Previews</CardTitle>
+            <CardDescription>Manage your documents with preview and actions.</CardDescription>
           </CardHeader>
           <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Created</TableHead>
-                  <TableHead>Title</TableHead>
-                  <TableHead>Sender</TableHead>
-                  <TableHead>Recipient</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>
-                    <span className="sr-only">Actions</span>
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {isLoading ? (
-                  <TableRow>
-                    <TableCell colSpan={6} className="h-24 text-center">
-                      Loading...
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  (documents as Document[])?.map((doc) => (
-                    <TableRow key={doc._id}>
-                      <TableCell>
-                        <Link to="/document/$documentId" params={{ documentId: doc._id }}>
-                          {new Date(doc.createdAt).toLocaleDateString()}
-                        </Link>
-                      </TableCell>
-                      <TableCell>
-                        <Link to="/document/$documentId" params={{ documentId: doc._id }}>
+            {isLoading ? (
+              <div className="text-center py-8">
+                <Loader />
+              </div>
+            ) : documents && documents.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {(documents as Document[]).map((doc, index) => (
+                  <Card key={doc._id} className="relative">
+                    <CardContent className="p-4">
+                      {/* Document Preview */}
+                      <div className="aspect-[8.5/11] bg-white dark:bg-gray-800 border-2 border-blue-500 rounded-lg mb-3 overflow-hidden relative">
+                        <div className="w-full h-full">
+                          <PDFPreview documentId={doc._id} fileName={doc.name} />
+                        </div>
+                        <div className="absolute bottom-2 right-2 text-xs font-medium text-blue-600 bg-white dark:bg-gray-800 px-1 rounded">
+                          {index + 1}
+                        </div>
+                      </div>
+                      
+                      {/* File Info */}
+                      <div className="text-center mb-3">
+                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
                           {doc.name}
+                        </p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          {new Date(doc.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex items-center justify-center space-x-2">
+                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                          <Crop className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                          <RotateCw className="h-4 w-4" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          className="h-8 w-8 p-0 text-red-600 hover:text-red-700"
+                          onClick={() => handleDeleteDocument(doc._id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+
+                      {/* View Document Button */}
+                      <div className="mt-3">
+                        <Link to="/document/$documentId" params={{ documentId: doc._id }}>
+                          <Button size="sm" className="w-full">
+                            View & Sign
+                          </Button>
                         </Link>
-                      </TableCell>
-                      <TableCell>You</TableCell>
-                      <TableCell>N/A</TableCell>
-                      <TableCell>Draft</TableCell>
-                      <TableCell>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" className="h-8 w-8 p-0">
-                              <span className="sr-only">Open menu</span>
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem asChild>
-                              <Link to="/document/$documentId" params={{ documentId: doc._id }}>
-                                Edit
-                              </Link>
-                            </DropdownMenuItem>
-                            <DropdownMenuItem asChild>
-                              <Link to="/document/$documentId" params={{ documentId: doc._id }}>
-                                View
-                              </Link>
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </CardContent>
-          <div className="flex items-center justify-between p-4">
-            <div className="flex-1 text-sm text-muted-foreground">
-              Showing {documents?.length ?? 0} result
-              {documents?.length === 1 ? "" : "s"}.
-            </div>
-            <div className="flex items-center space-x-6 lg:space-x-8">
-              <div className="flex items-center space-x-2">
-                <p className="text-sm font-medium">Rows per page</p>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" className="h-8 w-20">
-                      10 <ChevronDown className="ml-2 h-4 w-4" />
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+                
+                {/* Add New Document Card */}
+                <Card className="relative border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-500 transition-colors">
+                  <CardContent className="p-4 h-full flex flex-col items-center justify-center cursor-pointer" onClick={() => fileInputRef.current?.click()}>
+                    <div className="aspect-[8.5/11] w-full flex items-center justify-center mb-3">
+                      <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center">
+                        <Plus className="h-8 w-8 text-white" />
+                      </div>
+                    </div>
+                    
+                    <div className="text-center mb-3">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        Add New Document
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        Click to upload
+                      </p>
+                    </div>
+
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      disabled={isUploading}
+                      className="w-full"
+                    >
+                      {isUploading ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-2" />
+                          Uploading...
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="h-4 w-4 mr-2" />
+                          Upload
+                        </>
+                      )}
                     </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent>
-                    <DropdownMenuItem>10</DropdownMenuItem>
-                    <DropdownMenuItem>20</DropdownMenuItem>
-                    <DropdownMenuItem>50</DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                  </CardContent>
+                </Card>
               </div>
-              <div className="flex w-[100px] items-center justify-center text-sm font-medium">
-                Page 1 of 1
-              </div>
-              <div className="flex items-center space-x-2">
-                <Button
-                  variant="outline"
-                  className="hidden h-8 w-8 p-0 lg:flex"
-                >
-                  <span className="sr-only">Go to first page</span>
-                  <ChevronsLeft className="h-4 w-4" />
-                </Button>
-                <Button variant="outline" className="h-8 w-8 p-0">
-                  <span className="sr-only">Go to previous page</span>
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-                <Button variant="outline" className="h-8 w-8 p-0">
-                  <span className="sr-only">Go to next page</span>
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="outline"
-                  className="hidden h-8 w-8 p-0 lg:flex"
-                >
-                  <span className="sr-only">Go to last page</span>
-                  <ChevronsRight className="h-4 w-4" />
+            ) : (
+              <div className="text-center py-8">
+                <div className="w-16 h-16 mx-auto bg-blue-600 rounded-full flex items-center justify-center mb-4">
+                  <Plus className="h-8 w-8 text-white" />
+                </div>
+                <p className="text-gray-500 dark:text-gray-400 mb-4">No documents yet. Upload your first document to get started.</p>
+                <Button onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
+                  {isUploading ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
+                      Uploading...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="h-4 w-4 mr-2" />
+                      Upload Document
+                    </>
+                  )}
                 </Button>
               </div>
-            </div>
-          </div>
+            )}
+          </CardContent>
         </Card>
       </div>
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,.docx"
+        onChange={handleUpload}
+        className="hidden"
+      />
     </div>
   );
 }

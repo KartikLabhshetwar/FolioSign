@@ -22,7 +22,7 @@ function HomeComponent() {
                 </p>
               </div>
               <div className="space-x-4">
-                <Link to="/dashboard">
+                <Link to="/upload">
                   <Button>Get Started</Button>
                 </Link>
               </div>
